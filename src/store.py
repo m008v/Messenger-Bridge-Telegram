@@ -133,6 +133,15 @@ class BridgeStore:
             self._evict_messages()
             self._save()
 
+    def has_message(self, messenger_message_id: str) -> bool:
+        if not messenger_message_id:
+            return False
+        with self._lock:
+            return any(
+                self._message_key(transport, messenger_message_id) in self._data["messages"]
+                for transport in ("e2ee", "regular")
+            )
+
     def get_tg_message_id(self, transport: Transport, messenger_message_id: str) -> Optional[int]:
         with self._lock:
             raw = self._data["messages"].get(self._message_key(transport, messenger_message_id))

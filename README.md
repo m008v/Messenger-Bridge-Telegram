@@ -31,6 +31,7 @@ Dự án dùng `fbchat-v2` để đăng nhập, lắng nghe và gửi tin Messen
 - Forward Telegram text/caption/sticker sang Messenger theo mapping topic.
 - Forward reaction Telegram sang reaction Messenger nếu tin Telegram có mapping.
 - Dedupe reaction Messenger để tránh spam các message `reacted with ...` bị lặp.
+- Chống lặp tin nhắn: tin bridge gửi từ Telegram không bị Messenger echo ngược lại vào topic, tin Messenger nhận lại lần hai cũng bị bỏ qua.
 - Typing và read receipt có thể bật/tắt bằng `.env`; khi bật sẽ tự xoá sau thời gian ngắn.
 - Tự phục hồi khi Telegram topic bị xoá/đóng hoặc mapping bị stale.
 - Lưu mapping topic/message trong `data/bridge-store.json` để reply và activity bám đúng tin gốc.
@@ -167,7 +168,7 @@ FBCHAT_ENABLE_E2EE=0
 | `FBCHAT_E2EE_LOG_LEVEL` | Không | `none` | Log level của E2EE bridge. |
 | `FBCHAT_E2EE_READY_TIMEOUT` | Không | `90` | Thời gian chờ listener và E2EE handshake sẵn sàng khi khởi động. |
 | `FBCHAT_E2EE_SEND_TIMEOUT` | Không | `180` | Timeout cho RPC E2EE media/reaction, tính bằng giây. |
-| `IGNORE_SELF_MESSAGES` | Không | `1` | Bỏ qua tin do chính tài khoản Facebook bridge gửi. |
+| `IGNORE_SELF_MESSAGES` | Không | `1` | Bỏ qua tin do chính tài khoản Facebook bridge gửi. Đặt `0` để sync cả tin bạn gửi từ app Messenger khác (điện thoại, web); tin do bridge gửi từ Telegram vẫn được lọc trùng nên không bị lặp. |
 | `MESSAGE_CACHE_LIMIT` | Không | `3000` | Số mapping message giữ lại để reply/reaction/activity. |
 | `TG_CONNECT_TIMEOUT` | Không | `15` | Timeout kết nối Telegram Bot API. |
 | `TG_READ_TIMEOUT` | Không | `45` | Timeout đọc response Telegram Bot API. |

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import mimetypes
 import time
 import traceback
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Iterator, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -73,6 +74,7 @@ class MessengerTelegramBridge:
         self._reaction_activity_state: dict[str, tuple[str, int]] = {}
         self._typing_messages: dict[str, tuple[int, int]] = {}
         self._ephemeral_delete_tasks: dict[str, asyncio.Task] = {}
+        self._pending_outbound: dict[str, list[list[Optional[str]]]] = {}
 
     async def start(self, application: Application) -> None:
         self.bot = application.bot
@@ -131,9 +133,26 @@ class MessengerTelegramBridge:
             else:
                 logger.debug("Ignored Messenger event: type=%s", event_type)
             return
-        if self.config.ignore_self_messages and message.sender_id == self.messenger.self_id:
+        if message.sender_id == self.messenger.self_id:
+            if self.config.ignore_self_messages:
+                logger.debug(
+                    "Ignored self Messenger message: transport=%s messenger_id=%s message_id=%s",
+                    message.transport,
+                    message.messenger_id,
+                    message.message_id,
+                )
+                return
+            if self._consume_pending_outbound(message):
+                logger.debug(
+                    "Ignored echo of Telegram -> Messenger send in flight: transport=%s messenger_id=%s message_id=%s",
+                    message.transport,
+                    message.messenger_id,
+                    message.message_id,
+                )
+                return
+        if self.store.has_message(message.message_id):
             logger.debug(
-                "Ignored self Messenger message: transport=%s messenger_id=%s message_id=%s",
+                "Ignored already bridged Messenger message: transport=%s messenger_id=%s message_id=%s",
                 message.transport,
                 message.messenger_id,
                 message.message_id,
@@ -523,6 +542,46 @@ class MessengerTelegramBridge:
         for old_key, (_, seen_at) in list(self._reaction_activity_state.items()):
             if now_ms - seen_at > REACTION_STATE_RETENTION_MS:
                 self._reaction_activity_state.pop(old_key, None)
+
+    @staticmethod
+    def _outbound_key(transport: str, messenger_id: str) -> str:
+        return f"{transport}:{messenger_id}"
+
+    @contextlib.contextmanager
+    def _track_pending_outbound(self, entry: TopicEntry, text: Optional[str]) -> Iterator[None]:
+        """Remember a Telegram -> Messenger send until its message ID is stored.
+
+        Messenger echoes our own sends back as self messages, sometimes before the
+        send call returns the message ID. ``text`` is None for sends without text
+        (stickers), which then match any text-less self message in the thread.
+        """
+        key = self._outbound_key(entry.transport, entry.messenger_id)
+        # A one-item list gives each send its own identity, so concurrent sends
+        # with the same text are tracked and released independently.
+        token = [text.strip() if text is not None else None]
+        self._pending_outbound.setdefault(key, []).append(token)
+        try:
+            yield
+        finally:
+            remaining = [item for item in self._pending_outbound.get(key, []) if item is not token]
+            if remaining:
+                self._pending_outbound[key] = remaining
+            else:
+                self._pending_outbound.pop(key, None)
+
+    def _consume_pending_outbound(self, message: IncomingMessengerMessage) -> bool:
+        key = self._outbound_key(message.transport, message.messenger_id)
+        pending = self._pending_outbound.get(key)
+        if not pending:
+            return False
+        marker = (message.text or "").strip() or None
+        for index, token in enumerate(pending):
+            if token[0] == marker:
+                del pending[index]
+                if not pending:
+                    self._pending_outbound.pop(key, None)
+                return True
+        return False
 
     def _dedupe_activity(self, key: str, window_ms: int) -> bool:
         now = int(time.time() * 1000)
@@ -1052,7 +1111,8 @@ class MessengerTelegramBridge:
             _preview(text),
         )
         try:
-            result = await self.messenger.send_text(entry, text, quote)
+            with self._track_pending_outbound(entry, text):
+                result = await self.messenger.send_text(entry, text, quote)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Telegram -> Messenger failed: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s thread_id=%s",
@@ -1225,15 +1285,16 @@ class MessengerTelegramBridge:
         try:
             telegram_file = await self._telegram_call(self.bot.get_file, sticker.file_id)
             file_data = bytes(await telegram_file.download_as_bytearray())
-            result = await self.messenger.send_telegram_sticker(
-                entry,
-                file_data,
-                filename,
-                mime_type,
-                width,
-                height,
-                quote,
-            )
+            with self._track_pending_outbound(entry, None):
+                result = await self.messenger.send_telegram_sticker(
+                    entry,
+                    file_data,
+                    filename,
+                    mime_type,
+                    width,
+                    height,
+                    quote,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Telegram -> Messenger sticker failed: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s",
