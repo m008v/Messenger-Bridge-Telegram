@@ -1223,8 +1223,9 @@ class MessengerTelegramBridge:
             quote.message_id if quote else "-",
         )
         try:
-            telegram_file = await self._telegram_call(self.bot.get_file, sticker.file_id)
-            file_data = bytes(await telegram_file.download_as_bytearray())
+            file_data, filename, mime_type, width, height = await self._download_telegram_sticker(
+                sticker, filename, mime_type, width, height
+            )
             result = await self.messenger.send_telegram_sticker(
                 entry,
                 file_data,
@@ -1282,6 +1283,57 @@ class MessengerTelegramBridge:
             )
 
         return ForwardResult(True)
+
+    async def _download_telegram_sticker(
+        self,
+        sticker,
+        filename: str,
+        mime_type: str,
+        width: int,
+        height: int,
+    ) -> tuple[bytes, str, str, int, int]:
+        """Download a sticker in a form Messenger can display.
+
+        Messenger cannot render animated ``.tgs`` (Lottie) stickers and shows them as
+        a file attachment, so those are replaced by the static thumbnail Telegram
+        provides for every sticker.
+        """
+        assert self.bot is not None
+        thumbnail = getattr(sticker, "thumbnail", None)
+        if getattr(sticker, "is_animated", False) and thumbnail is not None:
+            thumb_file = await self._telegram_call(self.bot.get_file, thumbnail.file_id)
+            thumb_data = bytes(await thumb_file.download_as_bytearray())
+            thumb_mime = self._image_mime_from_bytes(thumb_data)
+            if thumb_mime:
+                extension = "webp" if thumb_mime == "image/webp" else thumb_mime.split("/", 1)[1]
+                stem = filename.rsplit(".", 1)[0]
+                logger.info(
+                    "Telegram animated sticker sent as static thumbnail: filename=%s mime=%s bytes=%s",
+                    filename,
+                    thumb_mime,
+                    len(thumb_data),
+                )
+                return (
+                    thumb_data,
+                    f"{stem}.{extension}",
+                    thumb_mime,
+                    int(getattr(thumbnail, "width", 0) or 0),
+                    int(getattr(thumbnail, "height", 0) or 0),
+                )
+            logger.warning("Telegram sticker thumbnail has unknown format, sending original: filename=%s", filename)
+
+        telegram_file = await self._telegram_call(self.bot.get_file, sticker.file_id)
+        return bytes(await telegram_file.download_as_bytearray()), filename, mime_type, width, height
+
+    @staticmethod
+    def _image_mime_from_bytes(data: bytes) -> Optional[str]:
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        return None
 
     @staticmethod
     def _telegram_sticker_meta(sticker) -> tuple[str, str, int, int]:

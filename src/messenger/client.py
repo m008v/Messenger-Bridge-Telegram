@@ -390,6 +390,17 @@ class MessengerClient:
                     "replyToId": reply_id,
                     "replyToSenderJid": reply_sender,
                 })
+            if clean_mime.startswith("image/"):
+                return await self._call_bridge_send("sendE2EEImage", {
+                    "chatJid": chat_jid,
+                    "data": encoded,
+                    "mimeType": clean_mime,
+                    "caption": "",
+                    "width": width,
+                    "height": height,
+                    "replyToId": reply_id,
+                    "replyToSenderJid": reply_sender,
+                })
             if clean_mime.startswith("video/"):
                 return await self._call_bridge_send("sendE2EEVideo", {
                     "chatJid": chat_jid,
